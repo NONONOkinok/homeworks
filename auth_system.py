@@ -75,8 +75,8 @@ def register_user(username, password):
 
 def login_user(username, password):
     """
-    Проверяет вход пользователя.
-    Возвращает True, если вход успешен, иначе False с сообщением.
+    Проверяет вход пользователя.                                                   
+    Возвращает True, если вход успешен, иначе False с сообщением.                                                   
     """
     users = load_users()
     
