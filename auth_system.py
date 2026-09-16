@@ -3,6 +3,8 @@ import json # для файла пользователя
 import os # для взаисодействия с файлами 
 import re # Для работы с регулярными выражениями
 import tkinter as tk # для оконных приложений (тут для интерфейса)
+import time
+from datetime import datetime
 from tkinter import messagebox, ttk # messagebox для диалогов, ttk для вкладок
 from zxcvbn import zxcvbn # самые частые пароли
 
@@ -14,6 +16,13 @@ USERS_FILE = "users.json"  # файл для хранения пользоват
 
 MIN_LENGTH = 10 # минимальная длина пароля
 SPECIAL_CHARS = r"""#!@$%^&*()_+\-=\[\]{};':"\\|,.<>/?`~"""
+
+# Ограничение попыток входа
+MAX_LOGIN_ATTEMPTS = 3          # максимум попыток
+LOCKOUT_SECONDS = 120           # блокировка на 2 минуты
+
+# Хранилище в памяти: {username: {"attempts": int, "locked_until": float}}
+_login_attempts: dict[str, dict] = {}
 
 # Единый объект хэшера
 ph = PasswordHasher() # По умолчанию: time_cost=3, memory_cost=64 MiB, parallelism=4
@@ -139,9 +148,8 @@ ZXCVBN_TRANSLATIONS = {
         "Избегайте распространённых имён и фамилий.",
 }
 
-
 def translate_zxcvbn(text: str) -> str:
-    """Переводит строку feedback от zxcvbn на русский (если есть перевод)."""
+    """Переводит строку feedback от zxcvbn на русский"""
     if not text:
         return text
     return ZXCVBN_TRANSLATIONS.get(text, text)
@@ -150,8 +158,8 @@ def translate_zxcvbn(text: str) -> str:
 
 def validate_password_policy(password: str) -> tuple[bool, str]:
     """
-    Проверяет базовую политику пароля.
-    Возвращает (ok, сообщение_об_ошибке).
+    Проверяет базовую политику пароля
+    Возвращает (ok, сообщение_об_ошибке)
     """
     if len(password) < MIN_LENGTH:
         return False, f"Пароль должен быть не короче {MIN_LENGTH} символов!"
@@ -238,17 +246,82 @@ def register_user(username: str, password: str, confirm: str) -> tuple[bool, str
     save_users(users)
     return True, "Регистрация успешна!"
 
+def _is_locked_out(username: str) -> tuple[bool, int]:
+    """
+    Проверяет, заблокирован ли пользователь.
+    Возвращает (заблокирован, секунд_осталось).
+    """
+    data = _login_attempts.get(username)
+    if not data:
+        return False, 0
+
+    locked_until = data.get("locked_until", 0)
+    if time.time() < locked_until:
+        remaining = int(locked_until - time.time()) + 1
+        return True, remaining
+
+    # Блокировка истекла — сбрасываем счётчик
+    if locked_until > 0:
+        _login_attempts.pop(username, None)
+    return False, 0
+
+
+def _register_failed_attempt(username: str) -> tuple[bool, int]:
+    """
+    Регистрирует неудачную попытку.
+    Возвращает (теперь_заблокирован, секунд_осталось).
+    """
+    data = _login_attempts.setdefault(username, {"attempts": 0, "locked_until": 0.0})
+    data["attempts"] += 1
+
+    if data["attempts"] >= MAX_LOGIN_ATTEMPTS:
+        data["locked_until"] = time.time() + LOCKOUT_SECONDS
+        data["attempts"] = 0   # сбрасываем счётчик, блокировка сама всё решит
+        return True, LOCKOUT_SECONDS
+
+    return False, 0
+
+
+def _reset_attempts(username: str) -> None:
+    """Сбрасывает счётчик попыток при успешном входе."""
+    _login_attempts.pop(username, None)
 
 def login_user(username: str, password: str) -> tuple[bool, str]:
     users = load_users()
     username = username.strip()
 
+    # 1. Проверка блокировки
+    locked, seconds = _is_locked_out(username)
+    if locked:
+        mins = seconds // 60
+        secs = seconds % 60
+        return False, (f"Слишком много попыток. "
+                       f"Повторите через {mins} мин {secs} сек.")
+
+    # 2. Проверка существования пользователя
     if username not in users:
+        # Неудачная попытка — пользователя нет
+        locked, seconds = _register_failed_attempt(username)
+        if locked:
+            return False, f"Слишком много попыток. Повторите через {seconds} сек."
         return False, "Пользователь не найден!"
 
+    # 3. Проверка пароля
     if verify_password(password, users[username]):
+        _reset_attempts(username)
         return True, "Добро пожаловать!"
-    return False, "Неверный пароль!"
+
+    # 4. Неверный пароль
+    locked, seconds = _register_failed_attempt(username)
+    if locked:
+        mins = seconds // 60
+        secs = seconds % 60
+        return False, (f"Неверный пароль. Слишком много попыток. "
+                       f"Повторите через {mins} мин {secs} сек.")
+
+    # Показываем, сколько попыток осталось
+    remaining = MAX_LOGIN_ATTEMPTS - _login_attempts[username]["attempts"]
+    return False, f"Неверный пароль! Осталось попыток: {remaining}"
 
 
 # -=-=-=-=-=-=-=- ИНТЕРФЕЙС -=-=-=-=-=-=-=-
