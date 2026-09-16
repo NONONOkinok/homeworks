@@ -155,7 +155,6 @@ def translate_zxcvbn(text: str) -> str:
     return ZXCVBN_TRANSLATIONS.get(text, text)
 
 # Критерии пароля
-
 def validate_password_policy(password: str) -> tuple[bool, str]:
     """
     Проверяет базовую политику пароля
@@ -328,7 +327,7 @@ def login_user(username: str, password: str) -> tuple[bool, str]:
 class AuthApp:
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title("Система аутентификации (Argon2)")
+        self.root.title("Система аутентификации")
         self.root.geometry("460x380")
         self.root.resizable(False, False)
 
