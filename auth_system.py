@@ -5,10 +5,12 @@
 - Переводы zxcvbn вынесены в отдельный файл translations.py
 """
 
+import os
 import re
 import sqlite3
 import tkinter as tk
 import time
+import unicodedata
 from tkinter import messagebox, ttk
 
 # Хэширование паролей
@@ -22,9 +24,10 @@ from zxcvbn import zxcvbn
 from translations import ZXCVBN_TRANSLATIONS
 
 
-# ============== КОНФИГУРАЦИЯ ==============
+# КОНФИГУРАЦИЯ 
 
-DB_FILE = "users.db"  # Файл базы данных SQLite
+# БД создаётся в папке с файлом auth_system.py
+DB_FILE = os.path.join(os.path.dirname(__file__), "users.db")
 
 MIN_LENGTH = 10  # минимальная длина пароля
 
@@ -39,7 +42,7 @@ _login_attempts: dict[str, dict] = {}
 ph = PasswordHasher()
 
 
-# ============== РАБОТА С БАЗОЙ ДАННЫХ ==============
+# РАБОТА С БАЗОЙ ДАННЫХ
 
 def get_db_connection() -> sqlite3.Connection:
     """Создаёт подключение к базе данных SQLite."""
@@ -154,12 +157,16 @@ def validate_password_policy(password: str) -> tuple[bool, str]:
     if not re.search(r"\d", password):
         return False, "Пароль должен содержать хотя бы одну цифру!"
 
-    # Заглавные буквы — любой Unicode-алфавит
-    if not re.search(r"\p{Lu}", password):
+    # Заглавные буквы — Lu (Uppercase Letter) или Lo (Other Letter) для иероглифов
+    has_upper = any(unicodedata.category(c) in ('Lu', 'Lt') for c in password)
+    # Если нет Lu/Lt, проверяем есть ли хоть какие-то буквы (для иероглифов)
+    has_letter = any(unicodedata.category(c).startswith('L') for c in password)
+    if not has_upper and not has_letter:
         return False, "Пароль должен содержать хотя бы одну заглавную букву!"
 
-    # Строчные буквы — любой Unicode-алфавит
-    if not re.search(r"\p{Ll}", password):
+    # Строчные буквы — Ll (Lowercase Letter) или Lo для иероглифов
+    has_lower = any(unicodedata.category(c) in ('Ll', 'Lo', 'Lt') for c in password)
+    if not has_lower:
         return False, "Пароль должен содержать хотя бы одну строчную букву!"
 
     return True, ""
