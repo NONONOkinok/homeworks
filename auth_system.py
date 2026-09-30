@@ -120,7 +120,7 @@ def db_get_all_users() -> list[str]:
         conn.close()
 
 
-# ============== РАБОТА С ПАРОЛЯМИ ==============
+# РАБОТА С ПАРОЛЯМИ
 
 def hash_password(password: str) -> str:
     """Хэширует пароль через Argon2. Поддерживает любые Unicode-символы."""
@@ -143,31 +143,44 @@ def translate_zxcvbn(text: str) -> str:
     return ZXCVBN_TRANSLATIONS.get(text, text)
 
 
-# ============== ВАЛИДАЦИЯ ПАРОЛЯ ==============
+# ВАЛИДАЦИЯ ПАРОЛЯ
 
 def validate_password_policy(password: str) -> tuple[bool, str]:
     r"""
     Проверяет базовую политику пароля.
-    Поддерживает Unicode: \p{Lu} и \p{Ll} работают с любыми алфавитами.
+
+    Правила:
+      * длина не меньше MIN_LENGTH;
+      * есть хотя бы одна цифра;
+      * есть хотя бы одна буква;
+      * если в пароле есть буквы с регистром (латиница, кириллица, греческий
+        и т.п.) — нужны и заглавные, и строчные. Для письменностей без
+        регистра (китайский, японский, корейский) достаточно просто буквы.
+
+    Поддерживает Unicode: эмодзи, иероглифы, кириллицу и любые другие символы.
     """
+    # 1. Проверка длины
     if len(password) < MIN_LENGTH:
         return False, f"Пароль должен быть не короче {MIN_LENGTH} символов!"
 
-    # Проверка на цифру
+    # 2. Проверка на наличие цифры (любой Unicode-цифры)
     if not re.search(r"\d", password):
         return False, "Пароль должен содержать хотя бы одну цифру!"
 
-    # Заглавные буквы — Lu (Uppercase Letter) или Lo (Other Letter) для иероглифов
-    has_upper = any(unicodedata.category(c) in ('Lu', 'Lt') for c in password)
-    # Если нет Lu/Lt, проверяем есть ли хоть какие-то буквы (для иероглифов)
-    has_letter = any(unicodedata.category(c).startswith('L') for c in password)
-    if not has_upper and not has_letter:
-        return False, "Пароль должен содержать хотя бы одну заглавную букву!"
+    # Список Unicode-категорий символов (например, 'Lu', 'Ll', 'Lo', 'Nd', 'So')
+    categories = [unicodedata.category(c) for c in password]
 
-    # Строчные буквы — Ll (Lowercase Letter) или Lo для иероглифов
-    has_lower = any(unicodedata.category(c) in ('Ll', 'Lo', 'Lt') for c in password)
-    if not has_lower:
-        return False, "Пароль должен содержать хотя бы одну строчную букву!"
+    # 3. Хотя бы одна буква в принципе (категории, начинающиеся с 'L')
+    if not any(cat.startswith("L") for cat in categories):
+        return False, "Пароль должен содержать хотя бы одну букву!"
+
+    # 4. Если есть буквы с регистром — нужны и заглавные, и строчные
+    has_cased = any(cat in ("Lu", "Ll", "Lt") for cat in categories)
+    if has_cased:
+        if not any(cat in ("Lu", "Lt") for cat in categories):
+            return False, "Пароль должен содержать хотя бы одну заглавную букву!"
+        if not any(cat == "Ll" for cat in categories):
+            return False, "Пароль должен содержать хотя бы одну строчную букву!"
 
     return True, ""
 
@@ -199,7 +212,7 @@ def rate_password(password: str) -> tuple[str, str]:
         return "Стойкий", comment
 
 
-# ============== РЕГИСТРАЦИЯ И ВХОД ==============
+# РЕГИСТРАЦИЯ И ВХОД
 
 def register_user(username: str, password: str, confirm: str) -> tuple[bool, str]:
     """Регистрирует нового пользователя."""
@@ -214,7 +227,7 @@ def register_user(username: str, password: str, confirm: str) -> tuple[bool, str
     if password != confirm:
         return False, "Пароли не совпадают!"
 
-    # Базовая п��литика
+    # Базовая политика
     ok, err = validate_password_policy(password)
     if not ok:
         return False, err
@@ -303,10 +316,12 @@ def login_user(username: str, password: str) -> tuple[bool, str]:
     return False, f"Неверный пароль! Осталось попыток: {remaining}"
 
 
-# ============== ИНТЕРФЕЙС (Tkinter) ==============
+# ИНТЕРФЕЙС (Tkinter)
 
 class AuthApp:
     def __init__(self, root: tk.Tk):
+
+        # Инициализирует главное окно приложения
         self.root = root
         self.root.title("Система аутентификации")
         self.root.geometry("460x420")
@@ -329,6 +344,11 @@ class AuthApp:
         self.setup_login_tab()
 
     def setup_register_tab(self):
+        """
+        Создаёт и размещает элементы интерфейса на вкладке «Регистрация»:
+        поля для ввода логина, пароля и подтверждения, индикатор стойкости пароля,
+        кнопку регистрации и текстовые подсказки.
+        """
         ttk.Label(self.register_frame, text="Логин:").grid(
             row=0, column=0, padx=10, pady=10, sticky="w")
         self.register_username = ttk.Entry(self.register_frame, width=28)
@@ -381,6 +401,11 @@ class AuthApp:
         ).grid(row=7, column=0, columnspan=2, pady=(0, 5))
 
     def setup_login_tab(self):
+        """
+        Создаёт и размещает элементы интерфейса на вкладке «Вход»:
+        поля для ввода логина и пароля, кнопку «Войти» и кнопку
+        «Показать всех пользователей».
+        """
         ttk.Label(self.login_frame, text="Логин:").grid(
             row=0, column=0, padx=10, pady=10, sticky="w")
         self.login_username = ttk.Entry(self.login_frame, width=28)
@@ -402,7 +427,12 @@ class AuthApp:
         ).grid(row=3, column=0, columnspan=2, pady=5)
 
     def on_password_change(self, event=None):
-        """Обновляет индикатор стойкости при вводе."""
+        """
+        Обработчик события ввода в поле пароля на вкладке регистрации.
+        Вызывается при каждом нажатии клавиши. Оценивает стойкость пароля
+        с помощью функции rate_password и обновляет текстовый индикатор
+        и прогресс-бар
+        """
         pwd = self.register_password.get()
         if not pwd:
             self.strength_var.set("—")
@@ -419,6 +449,13 @@ class AuthApp:
         self.strength_bar["value"] = values[level]
 
     def handle_register(self):
+        """
+        Обработчик нажатия кнопки «Зарегистрироваться»
+        Считывает логин, пароль и подтверждение из полей ввода,
+        проверяет их заполненность, вызывает функцию register_user
+        При успехе показывает сообщение, очищает поля и сбрасывает
+        индикатор стойкости. При ошибке выводит сообщение об ошибке
+        """
         username = self.register_username.get()
         password = self.register_password.get()
         confirm = self.register_confirm.get()
@@ -440,6 +477,12 @@ class AuthApp:
             messagebox.showerror("Ошибка", message)
 
     def handle_login(self):
+        """
+        Обработчик нажатия кнопки "Войти"
+        Считывает логин и пароль из полей ввода, проверяет их заполненность,
+        вызывает функцию login_user. При успехе показывает сообщение и
+        очищает поля. При ошибке выводит сообщение об ошибке
+        """
         username = self.login_username.get()
         password = self.login_password.get()
 
@@ -456,6 +499,12 @@ class AuthApp:
             messagebox.showerror("Ошибка", message)
 
     def show_users(self):
+        """
+        Обработчик нажатия кнопки «Показать всех пользователей».
+        Получает список логинов из базы данных с помощью db_get_all_users
+        и отображает их в информационном окне. Если пользователей нет,
+        выводит соответствующее сообщение
+        """
         users = db_get_all_users()
         if not users:
             messagebox.showinfo("Пользователи", "Нет зарегистрированных пользователей")
