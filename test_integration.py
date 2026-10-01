@@ -1,16 +1,16 @@
 """
 Интеграционные тесты: проверяют полный цикл работы системы
-(регистрация → вход → ошибки → блокировка).
+(регистрация -> вход -> ошибки -> блокировка)
 
 В отличие от юнит-тестов, здесь несколько функций вызываются вместе,
-имитируя реальное поведение пользователя.
+имитируя реальное поведение пользователя
 
 Запуск:
     pytest test_integration.py -v
 """
 
 import pytest
-
+import sys
 import auth_system
 
 
@@ -21,7 +21,7 @@ def isolated_app(tmp_path, monkeypatch):
       * отдельная временная БД;
       * zxcvbn заменён на быструю заглушку (иначе некоторые пароли
         будут оцениваться очень долго);
-      * счётчик попыток входа очищен (общая фикстура conftest.py).
+      * счётчик попыток входа очищен (общая фикстура conftest.py)
     """
     db_path = tmp_path / "integration_users.db"
     monkeypatch.setattr(auth_system, "DB_FILE", str(db_path))
@@ -113,8 +113,6 @@ def test_show_all_users_after_registration(isolated_app):
 # для запуска
 
 if __name__ == "__main__":
-    import sys
-    import pytest
 
     args = [__file__, "-v", "--tb=short"]
     sys.exit(pytest.main(args))

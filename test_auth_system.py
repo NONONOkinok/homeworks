@@ -1,5 +1,5 @@
 """
-Юнит-тесты для auth_system.py (pytest).
+Юнит-тесты для auth_system.py (pytest)
 
 Запуск:
     pytest test_auth_system.py -v
@@ -7,14 +7,14 @@
 
 Тесты для паролей с Unicode (кириллица, иероглифы, эмодзи) сделаны «быстрыми»:
 в них zxcvbn подменяется заглушкой через monkeypatch, иначе на некоторых
-входах он считает очень долго.
+входах он считает очень долго
 """
 
 import time
 import unicodedata
 
 import pytest
-
+import sys
 import auth_system
 
 
@@ -467,11 +467,6 @@ class TestAuthApp:
 # для запуска
 
 if __name__ == "__main__":
-    # Эта ветка выполняется ТОЛЬКО когда файл запущен напрямую
-    # (кнопкой Run или командой `python test_auth_system.py`)
-    # Когда pytest сам импортирует файл для сбора тестов — сюда
-    # управление не попадает, и рекурсии не будет
-
     import sys
     import pytest
 
@@ -481,6 +476,6 @@ if __name__ == "__main__":
     # "--tb=short" — компактный traceback при падении
     args = [__file__, "-v", "--tb=short"]
 
-    # Если хочется сразу видеть покрытие — добавь ещё:
+    # чтоб сразу видеть покрытие
     # args += ["--cov=auth_system", "--cov-report=term-missing"]
     sys.exit(pytest.main(args))
