@@ -298,9 +298,9 @@ def login_user(username: str, password: str) -> tuple[bool, str]:
         locked, seconds = _register_failed_attempt(username)
         if locked:
             return False, f"Слишком много попыток. Повторите через {seconds} сек."
-        return False, "Пользователь не найден!"
+        return False, "Неправильный данные или пользователь не найден!" # на самом деле: "пользователь не найден", но пользователь не должен об этом знать
 
-    # Проверка пароля (поддержка Unicode)
+    # Проверка пароля (поддержка Unicode имеется)
     if verify_password(password, stored_hash):
         _reset_attempts(username)
         return True, "Добро пожаловать!"
