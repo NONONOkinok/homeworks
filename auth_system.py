@@ -317,6 +317,78 @@ def login_user(username: str, password: str) -> tuple[bool, str]:
 
 
 # ИНТЕРФЕЙС (Tkinter)
+class PasswordEntry(ttk.Frame):
+    """
+    Поле для ввода пароля с возможностью подсмотреть введённое.
+
+    Устроено так: внутри Frame лежит Entry с show="*" (пароль скрыт) и
+    Checkbutton «Показать». Когда галочка включена, у Entry меняется
+    атрибут show на пустую строку — символы становятся видимыми.
+
+    Снаружи объект ведёт себя как обычный ttk.Entry: методы get, insert,
+    delete, bind доступны через self.entry.
+    """
+
+    def __init__(self, master, width: int = 28, **kwargs):
+        # Frame — это контейнер, в котором лежат Entry и Checkbutton рядом
+        super().__init__(master, **kwargs)
+
+        # Переменная Tk: True — пароль виден, False — скрыт звёздочками
+        self._show_var = tk.BooleanVar(value=False)
+
+        # Сам Entry. Изначально символы скрыты звёздочкой.
+        self.entry = ttk.Entry(self, width=width, show="*")
+        self.entry.grid(row=0, column=0, sticky="ew")
+
+        # Чекбокс-«глаз». При переключении вызывает _toggle
+        self._toggle_btn = ttk.Checkbutton(
+            self,
+            text="👁",
+            variable=self._show_var,
+            command=self._toggle,
+            width=3,
+        )
+        self._toggle_btn.grid(row=0, column=1, padx=(4, 0))
+
+        # Растягиваем Entry при изменении размера контейнера
+        self.columnconfigure(0, weight=1)
+
+    def _toggle(self) -> None:
+        """Переключает режим отображения: пароль / звёздочки."""
+        self.entry.configure(show="" if self._show_var.get() else "*")
+
+    # "Прокидываем" методы Entry наружу, чтобы код выглядел привычно
+
+    def get(self) -> str:
+        """Возвращает введённый текст."""
+        return self.entry.get()
+
+    def insert(self, index, text: str) -> None:
+        """Вставляет текст в позицию index."""
+        self.entry.insert(index, text)
+
+    def delete(self, first, last=None) -> None:
+        """Удаляет символы в диапазоне."""
+        self.entry.delete(first, last)
+
+    def bind(self, sequence, func, add=None):  # noqa: D401
+        """Пробрасывает привязку события к внутреннему Entry."""
+        return self.entry.bind(sequence, func, add)
+
+    def focus_set(self) -> None:
+        """Передаёт фокус внутреннему Entry."""
+        self.entry.focus_set()
+
+    # методы-обёртки над Checkbutton, полезные для тестов
+
+    def is_password_visible(self) -> bool:
+        """True, если пароль сейчас показан открытым текстом."""
+        return self._show_var.get()
+
+    def toggle_password_visibility(self) -> None:
+        """Программно переключает видимость (как клик по чекбоксу)."""
+        self._show_var.set(not self._show_var.get())
+        self._toggle()
 
 class AuthApp:
     def __init__(self, root: tk.Tk):
@@ -356,8 +428,8 @@ class AuthApp:
 
         ttk.Label(self.register_frame, text="Пароль:").grid(
             row=1, column=0, padx=10, pady=10, sticky="w")
-        self.register_password = ttk.Entry(self.register_frame, width=28, show="*")
-        self.register_password.grid(row=1, column=1, padx=10, pady=10)
+        self.register_password = PasswordEntry(self.register_frame, width=28)
+        self.register_password.grid(row=1, column=1, padx=10, pady=10, sticky="ew")
         self.register_password.bind("<KeyRelease>", self.on_password_change)
 
         # Индикатор стойкости
@@ -378,8 +450,8 @@ class AuthApp:
 
         ttk.Label(self.register_frame, text="Подтверждение:").grid(
             row=4, column=0, padx=10, pady=10, sticky="w")
-        self.register_confirm = ttk.Entry(self.register_frame, width=28, show="*")
-        self.register_confirm.grid(row=4, column=1, padx=10, pady=10)
+        self.register_confirm = PasswordEntry(self.register_frame, width=28)
+        self.register_confirm.grid(row=4, column=1, padx=10, pady=10, sticky="ew")
 
         ttk.Button(
             self.register_frame,
@@ -413,18 +485,12 @@ class AuthApp:
 
         ttk.Label(self.login_frame, text="Пароль:").grid(
             row=1, column=0, padx=10, pady=10, sticky="w")
-        self.login_password = ttk.Entry(self.login_frame, width=28, show="*")
-        self.login_password.grid(row=1, column=1, padx=10, pady=10)
+        self.login_password = PasswordEntry(self.login_frame, width=28)
+        self.login_password.grid(row=1, column=1, padx=10, pady=10, sticky="ew")
 
         ttk.Button(
             self.login_frame, text="Войти", command=self.handle_login
         ).grid(row=2, column=0, columnspan=2, pady=20)
-
-        ttk.Button(
-            self.login_frame,
-            text="Показать всех пользователей",
-            command=self.show_users
-        ).grid(row=3, column=0, columnspan=2, pady=5)
 
     def on_password_change(self, event=None):
         """
@@ -497,24 +563,6 @@ class AuthApp:
             self.login_password.delete(0, tk.END)
         else:
             messagebox.showerror("Ошибка", message)
-
-    def show_users(self):
-        """
-        Обработчик нажатия кнопки «Показать всех пользователей».
-        Получает список логинов из базы данных с помощью db_get_all_users
-        и отображает их в информационном окне. Если пользователей нет,
-        выводит соответствующее сообщение
-        """
-        users = db_get_all_users()
-        if not users:
-            messagebox.showinfo("Пользователи", "Нет зарегистрированных пользователей")
-        else:
-            user_list = "\n".join([f"- {u}" for u in users])
-            messagebox.showinfo(
-                "Зарегистрированные пользователи",
-                f"Всего: {len(users)}\n\n{user_list}"
-            )
-
 
 # ============== ТОЧКА ВХОДА ==============
 

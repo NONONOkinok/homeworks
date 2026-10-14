@@ -10,6 +10,7 @@
 """
 
 import pytest
+import sys
 
 import auth_system
 
@@ -113,8 +114,6 @@ def test_show_all_users_after_registration(isolated_app):
 # для запуска
 
 if __name__ == "__main__":
-    import sys
-    import pytest
 
     args = [__file__, "-v", "--tb=short"]
     sys.exit(pytest.main(args))

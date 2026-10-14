@@ -1,11 +1,7 @@
 """
-Юнит-тесты для auth_system.py (pytest).
+Юнит-тесты для auth_system.py (pytest)
 
-Запуск:
-    pytest test_auth_system.py -v
-    pytest --cov=auth_system --cov-report=term-missing
-
-Тесты для паролей с Unicode (кириллица, иероглифы, эмодзи) сделаны «быстрыми»:
+Тесты для паролей с Unicode (кириллица, иероглифы, эмодзи):
 в них zxcvbn подменяется заглушкой через monkeypatch, иначе на некоторых
 входах он считает очень долго.
 """
@@ -14,7 +10,7 @@ import time
 import unicodedata
 
 import pytest
-
+import sys
 import auth_system
 
 
@@ -362,6 +358,59 @@ class TestLoginUser:
         ok, msg = auth_system.login_user("юзер", pwd)
         assert ok is True, msg
 
+# PasswordEntry - видимый пароль
+
+class TestPasswordEntry:
+    """Тесты виджета PasswordEntry: ввод и переключение видимости"""
+
+    @pytest.fixture
+    def root(self):
+        """Скрытое корневое окно Tk; без дисплея тесты пропускаются"""
+        tk = pytest.importorskip("tkinter")
+        try:
+            r = tk.Tk()
+        except tk.TclError:
+            pytest.skip("Нет доступного дисплея для Tkinter")
+        r.withdraw()
+        yield r
+        r.destroy()
+
+    @pytest.fixture
+    def pwd_entry(self, root):
+        """Экземпляр PasswordEntry, привязанный к скрытому окну"""
+        return auth_system.PasswordEntry(root, width=20)
+
+    def test_get_insert_delete_work(self, pwd_entry):
+        """get/insert/delete проксируются во внутренний Entry"""
+        pwd_entry.insert(0, "secret")
+        assert pwd_entry.get() == "secret"
+        pwd_entry.delete(0, "end")
+        assert pwd_entry.get() == ""
+
+    def test_password_hidden_by_default(self, pwd_entry):
+        """По умолчанию пароль скрыт звёздочками"""
+        # Внутренний Entry должен иметь show="*"
+        assert pwd_entry.entry.cget("show") == "*"
+        assert pwd_entry.is_password_visible() is False
+
+    def test_toggle_shows_and_hides(self, pwd_entry):
+        """Переключение видимости меняет show у Entry"""
+        # Показать
+        pwd_entry.toggle_password_visibility()
+        assert pwd_entry.is_password_visible() is True
+        assert pwd_entry.entry.cget("show") == ""
+
+        # Скрыть обратно
+        pwd_entry.toggle_password_visibility()
+        assert pwd_entry.is_password_visible() is False
+        assert pwd_entry.entry.cget("show") == "*"
+
+    def test_text_preserved_on_toggle(self, pwd_entry):
+        """Текст не теряется при переключении видимости"""
+        pwd_entry.insert(0, "Пароль🔐123Aa")
+        pwd_entry.toggle_password_visibility()
+        pwd_entry.toggle_password_visibility()
+        assert pwd_entry.get() == "Пароль🔐123Aa"
 
 # UI (AuthApp) — работает, только если есть дисплей
 
@@ -445,24 +494,24 @@ class TestAuthApp:
         app.handle_login()
         assert errors
 
-    def test_show_users_empty(self, app, monkeypatch):
-        """Если пользователей нет — показывается соответствующее сообщение."""
-        infos = []
-        monkeypatch.setattr(auth_system.messagebox, "showinfo",
-                            lambda title, msg: infos.append(msg))
-        app.show_users()
-        assert infos and "нет" in infos[0].lower()
-
-    def test_show_users_with_data(self, app, monkeypatch):
-        """Если пользователи есть — они перечисляются."""
-        auth_system.db_add_user("ui_user1", "h")
-        auth_system.db_add_user("ui_user2", "h")
-        infos = []
-        monkeypatch.setattr(auth_system.messagebox, "showinfo",
-                            lambda title, msg: infos.append(msg))
-        app.show_users()
-        assert infos
-        assert "ui_user1" in infos[0] and "ui_user2" in infos[0]
+    def test_register_password_has_toggle(self, app):
+        """Поле пароля в интерфейсе — это PasswordEntry с «глазом»."""
+        assert isinstance(app.register_password, auth_system.PasswordEntry)
+        assert isinstance(app.register_confirm, auth_system.PasswordEntry)
+        assert isinstance(app.login_password, auth_system.PasswordEntry)
+    
+    def test_register_password_toggle_visible(self, app):
+        """В UI поле пароля можно показать/скрыть без потери текста."""
+        app.register_password.delete(0, "end")
+        app.register_password.insert(0, "secret123Aa")
+        assert app.register_password.entry.cget("show") == "*"
+    
+        app.register_password.toggle_password_visibility()
+        assert app.register_password.entry.cget("show") == ""
+    
+        app.register_password.toggle_password_visibility()
+        assert app.register_password.entry.cget("show") == "*"
+        assert app.register_password.get() == "secret123Aa"
 
 # для запуска
 
@@ -472,18 +521,12 @@ if __name__ == "__main__":
     # Когда pytest сам импортирует файл для сбора тестов — сюда
     # управление не попадает, и рекурсии не будет
 
-    import sys
-    import pytest
-
-    # Собираем аргументы для pytest:
-    #   __file__   — запускаем именно этот файл;
-    #   "-v"       — подробный вывод (каждый тест отдельной строкой);
-    #   "--tb=short" — компактный traceback при падении
+    # аргументы для pytest:
+    # __file__   — запускаем именно этот файл;
+    # "-v"       — подробный вывод (каждый тест отдельной строкой);
+    # "--tb=short" — компактный traceback при падении
     args = [__file__, "-v", "--tb=short"]
 
-    # Если хочется сразу видеть покрытие — добавь ещё:
+    # Если хочется сразу видеть покрытие
     # args += ["--cov=auth_system", "--cov-report=term-missing"]
-
-    # pytest.main вернёт код: 0 — всё хорошо, 1 — были падения и т.п.
-    # sys.exit передаст его операционной системе (и VS Code)
     sys.exit(pytest.main(args))
