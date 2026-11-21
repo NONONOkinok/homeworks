@@ -39,13 +39,13 @@ test:
 	$(PYTHON) -m pytest
 
 test-unit:
-	$(PYTHON) -m pytest test_auth_system.py test_secret_store.py test_token_manager.py
+	$(PYTHON) -m pytest test_auth_system.py test_secret_store.py test_token_manager.py test_refresh_token.py
 
 test-integration:
 	$(PYTHON) -m pytest test_integration.py
 
 test-cov:
-	$(PYTHON) -m pytest --cov=auth_system --cov=database --cov=secret_store --cov=token_manager --cov-report=term-missing --cov-report=html
+	$(PYTHON) -m pytest --cov=auth_system --cov=database --cov=secret_store --cov=token_manager --cov=security --cov=refresh_token --cov-report=term-missing --cov-report=html
 
 # Очистка
 clean:
