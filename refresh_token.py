@@ -131,6 +131,14 @@ def verify_refresh_token(
         raise RefreshTokenError("not_current")
     if row["expires_at"] <= checked_at:
         raise RefreshTokenError("expired")
+    session = conn.execute(
+        "SELECT state, expires_at FROM sessions WHERE id = ?",
+        (row["session_id"],),
+    ).fetchone()
+    if session is None or session["state"] != "active":
+        raise RefreshTokenError("no_session")
+    if session["expires_at"] <= checked_at:
+        raise RefreshTokenError("expired")
 
     stored = load_refresh_secret(store, row["id"])
     if stored is None or not hashes_match(stored, refresh_token):
@@ -143,13 +151,14 @@ def verify_refresh_token(
 
 
 def _require_active_session(conn: sqlite3.Connection, session_id: str) -> None:
+    """Сессия ещё только создаётся (pending) или уже активна. Отозванная не годится."""
     if not isinstance(session_id, str) or session_id.strip() == "":
         raise RefreshTokenError("no_session")
     row = conn.execute(
         "SELECT state FROM sessions WHERE id = ?",
         (session_id,),
     ).fetchone()
-    if row is None or row["state"] != "active":
+    if row is None or row["state"] not in ("active", "pending"):
         raise RefreshTokenError("no_session")
 
 

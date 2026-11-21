@@ -581,16 +581,25 @@ def main():
     Новый секрет в этом случае не подставляется.
     """
     from secret_store import KeyringSecretStore, SecretStoreError, load_or_create_signing_key
+    from session_manager import recover_pending_sessions
 
     root = tk.Tk()
+    store = KeyringSecretStore()
     try:
-        load_or_create_signing_key(KeyringSecretStore())
+        load_or_create_signing_key(store)
     except SecretStoreError:
         messagebox.showerror(
             "Хранилище",
             "Защищённое хранилище недоступно. Новые сессии создать нельзя. "
             "Регистрация и проверка пароля по-прежнему доступны.",
         )
+    else:
+        init_db()
+        conn = get_db_connection()
+        try:
+            recover_pending_sessions(conn, store)
+        finally:
+            conn.close()
     AuthApp(root)
     root.mainloop()
 
