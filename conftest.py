@@ -20,6 +20,24 @@ import auth_system
 
 
 @pytest.fixture(autouse=True)
+def block_real_keyring(monkeypatch):
+    """
+    Не даёт тестам читать и записывать настоящую связку паролей Windows.
+
+    Код, которому нужно хранилище, получает MemorySecretStore
+    или подмену функций keyring внутри конкретного теста.
+    """
+    import keyring
+
+    def blocked(*_args, **_kwargs):
+        raise RuntimeError("Тест обратился к настоящему keyring")
+
+    monkeypatch.setattr(keyring, "get_password", blocked)
+    monkeypatch.setattr(keyring, "set_password", blocked)
+    monkeypatch.setattr(keyring, "delete_password", blocked)
+
+
+@pytest.fixture(autouse=True)
 def reset_login_attempts():
     """
     Автоматически очищает счётчик неудачных попыток входа

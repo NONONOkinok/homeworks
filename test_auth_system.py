@@ -209,6 +209,97 @@ class TestDatabase:
         """В пустой БД нет пользователей."""
         assert auth_system.db_get_all_users() == []
 
+    def test_add_user_gets_stable_id(self, temp_db):
+        """Новый пользователь получает непустой user_id, хеш пароля не меняется."""
+        assert auth_system.db_add_user("alice", "hash1") is True
+        conn = auth_system.get_db_connection()
+        try:
+            row = conn.execute(
+                "SELECT password_hash, user_id, status FROM users WHERE username = ?",
+                ("alice",),
+            ).fetchone()
+        finally:
+            conn.close()
+        assert row["password_hash"] == "hash1"
+        assert row["status"] == "active"
+        assert isinstance(row["user_id"], str) and row["user_id"]
+
+    def test_session_tables_created(self, temp_db):
+        """Миграция создаёт таблицы сессий и не требует повторного применения."""
+        auth_system.init_db()
+        conn = auth_system.get_db_connection()
+        try:
+            names = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type IN ('table', 'index')"
+                )
+            }
+            assert "sessions" in names
+            assert "refresh_tokens" in names
+            assert "security_events" in names
+            assert "one_current_refresh" in names
+            versions = [
+                row[0]
+                for row in conn.execute(
+                    "SELECT version FROM schema_migrations ORDER BY version"
+                )
+            ]
+        finally:
+            conn.close()
+        assert versions == [1, 2, 3]
+
+    def test_legacy_users_keep_password_hash(self, tmp_path, monkeypatch):
+        """Старая база без user_id обновляется, хеш и логин остаются."""
+        import sqlite3
+
+        db_path = tmp_path / "legacy.db"
+        raw = sqlite3.connect(db_path)
+        raw.execute(
+            """
+            CREATE TABLE users (
+                username TEXT PRIMARY KEY,
+                password_hash TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        raw.execute(
+            "INSERT INTO users (username, password_hash, created_at) VALUES (?, ?, ?)",
+            ("alice", "argon2-hash", "2020-01-01 00:00:00"),
+        )
+        raw.commit()
+        raw.close()
+
+        monkeypatch.setattr(auth_system, "DB_FILE", str(db_path))
+        auth_system.init_db()
+
+        conn = auth_system.get_db_connection()
+        try:
+            row = conn.execute(
+                "SELECT username, password_hash, created_at, user_id, status FROM users"
+            ).fetchone()
+            user_id = row["user_id"]
+            assert row["username"] == "alice"
+            assert row["password_hash"] == "argon2-hash"
+            assert row["created_at"] == "2020-01-01 00:00:00"
+            assert row["status"] == "active"
+            assert user_id
+        finally:
+            conn.close()
+
+        auth_system.init_db()
+        conn = auth_system.get_db_connection()
+        try:
+            rows = conn.execute(
+                "SELECT password_hash, user_id FROM users"
+            ).fetchall()
+            assert len(rows) == 1
+            assert rows[0]["password_hash"] == "argon2-hash"
+            assert rows[0]["user_id"] == user_id
+        finally:
+            conn.close()
+
 
 # РЕГИСТРАЦИЯ (register_user)
 

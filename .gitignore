@@ -1,5 +1,7 @@
 ﻿# Базы данных
 *.db
+*.db-wal
+*.db-shm
 *.sqlite3
 
 # Python кэш

@@ -11,7 +11,10 @@ import sqlite3
 import tkinter as tk
 import time
 import unicodedata
+import uuid
 from tkinter import messagebox, ttk
+
+from database import migrate
 
 # Хэширование паролей
 from argon2 import PasswordHasher
@@ -45,24 +48,28 @@ ph = PasswordHasher()
 # РАБОТА С БАЗОЙ ДАННЫХ
 
 def get_db_connection() -> sqlite3.Connection:
-    """Создаёт подключение к базе данных SQLite."""
-    conn = sqlite3.connect(DB_FILE)
+    """
+    Создаёт подключение к базе данных SQLite.
+
+    foreign_keys включает связи между новыми таблицами.
+    busy_timeout заставляет второй экземпляр подождать, если база занята записью.
+    WAL позволяет читать базу во время записи. Это подготовка к нескольким
+    окнам приложения, а не общая база между разными компьютерами.
+    """
+    conn = sqlite3.connect(DB_FILE, timeout=5.0)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA busy_timeout = 5000")
+    conn.execute("PRAGMA journal_mode = WAL").fetchone()
     return conn
 
 
 def init_db() -> None:
-    """Создаёт таблицу пользователей, если её нет."""
+    """Создаёт и обновляет схему. Повторный запуск не трогает уже записанных пользователей."""
     conn = get_db_connection()
     try:
         with conn:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS users (
-                    username TEXT PRIMARY KEY,
-                    password_hash TEXT NOT NULL,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
+            migrate(conn)
     finally:
         conn.close()
 
@@ -73,8 +80,8 @@ def db_add_user(username: str, password_hash: str) -> bool:
     try:
         with conn:
             conn.execute(
-                "INSERT INTO users (username, password_hash) VALUES (?, ?)",
-                (username, password_hash)
+                "INSERT INTO users (username, password_hash, user_id) VALUES (?, ?, ?)",
+                (username, password_hash, str(uuid.uuid4())),
             )
         return True
     except sqlite3.IntegrityError:
@@ -567,7 +574,23 @@ class AuthApp:
 # ============== ТОЧКА ВХОДА ==============
 
 def main():
+    """
+    Перед окном убеждается, что секрет подписи либо уже лежит в keyring,
+    либо создаётся один раз. Если связка паролей не отвечает, приложение
+    всё равно открывается: регистрация и проверка пароля от неё не зависят.
+    Новый секрет в этом случае не подставляется.
+    """
+    from secret_store import KeyringSecretStore, SecretStoreError, load_or_create_signing_key
+
     root = tk.Tk()
+    try:
+        load_or_create_signing_key(KeyringSecretStore())
+    except SecretStoreError:
+        messagebox.showerror(
+            "Хранилище",
+            "Защищённое хранилище недоступно. Новые сессии создать нельзя. "
+            "Регистрация и проверка пароля по-прежнему доступны.",
+        )
     AuthApp(root)
     root.mainloop()
 
