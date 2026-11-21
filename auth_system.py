@@ -580,6 +580,7 @@ def main():
     всё равно открывается: регистрация и проверка пароля от неё не зависят.
     Новый секрет в этом случае не подставляется.
     """
+    from refresh_token import recover_abandoned_tokens
     from secret_store import KeyringSecretStore, SecretStoreError, load_or_create_signing_key
     from session_manager import recover_pending_sessions
 
@@ -598,6 +599,7 @@ def main():
         conn = get_db_connection()
         try:
             recover_pending_sessions(conn, store)
+            recover_abandoned_tokens(conn, store)
         finally:
             conn.close()
     AuthApp(root)

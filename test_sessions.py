@@ -145,9 +145,12 @@ class TestRevokeAndAuthorize:
             assert first["access_token"] not in str(caught.value)
             assert authorize(conn, KEY, second["access_token"], now=NOW)["session_id"] == second["session_id"]
             with pytest.raises(SessionError) as refresh_error:
-                refresh_session_token(conn, store, first["refresh_token"], now=NOW)
+                refresh_session_token(conn, store, first["refresh_token"], KEY, now=NOW)
             assert refresh_error.value.code == "not_current"
-            assert refresh_session_token(conn, store, second["refresh_token"], now=NOW)["session_id"] == second["session_id"]
+            refreshed = refresh_session_token(
+                conn, store, second["refresh_token"], KEY, now=NOW
+            )
+            assert refreshed["session_id"] == second["session_id"]
         finally:
             conn.close()
 

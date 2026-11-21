@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import re
 import secrets
+import threading
 from typing import Protocol
 
 SERVICE_NAME = "info-sec-auth-homework"
@@ -107,33 +108,50 @@ class MemorySecretStore:
     def __init__(self) -> None:
         self._items: dict[str, str] = {}
         self._failures: dict[str, int] = {"get": 0, "put": 0, "delete": 0}
+        self._delay: dict[str, int] = {"get": 0, "put": 0, "delete": 0}
+        self._lock = threading.Lock()
 
     def fail_next(self, operation: str, times: int = 1) -> None:
         """Следующие вызовы операции завершаются ошибкой хранилища."""
-        if operation not in self._failures:
-            raise ValueError("Неизвестная операция хранилища")
-        if times < 1:
-            raise ValueError("Число сбоев должно быть положительным")
+        self._check_operation(operation, times)
         self._failures[operation] += times
+
+    def fail_after(self, operation: str, successes: int) -> None:
+        """Сначала пропускает несколько успешных вызовов, затем один сбой."""
+        self._check_operation(operation, successes)
+        self._delay[operation] += successes
+        self._failures[operation] += 1
 
     def get(self, name: str) -> str | None:
         _validate_name(name)
-        self._use("get")
-        return self._items.get(name)
+        with self._lock:
+            self._use("get")
+            return self._items.get(name)
 
     def put(self, name: str, value: str) -> None:
         _validate_name(name)
         if value == "":
             raise ValueError("Пустой секрет не сохраняется")
-        self._use("put")
-        self._items[name] = value
+        with self._lock:
+            self._use("put")
+            self._items[name] = value
 
     def delete(self, name: str) -> None:
         _validate_name(name)
-        self._use("delete")
-        self._items.pop(name, None)
+        with self._lock:
+            self._use("delete")
+            self._items.pop(name, None)
+
+    def _check_operation(self, operation: str, times: int) -> None:
+        if operation not in self._failures:
+            raise ValueError("Неизвестная операция хранилища")
+        if times < 1:
+            raise ValueError("Число вызовов должно быть положительным")
 
     def _use(self, operation: str) -> None:
+        if self._delay[operation]:
+            self._delay[operation] -= 1
+            return
         left = self._failures[operation]
         if left:
             self._failures[operation] = left - 1

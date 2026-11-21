@@ -39,7 +39,7 @@ test:
 	$(PYTHON) -m pytest
 
 test-unit:
-	$(PYTHON) -m pytest test_auth_system.py test_secret_store.py test_token_manager.py test_refresh_token.py test_sessions.py
+	$(PYTHON) -m pytest test_auth_system.py test_secret_store.py test_token_manager.py test_refresh_token.py test_sessions.py test_rotation.py
 
 test-integration:
 	$(PYTHON) -m pytest test_integration.py

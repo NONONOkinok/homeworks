@@ -8,7 +8,8 @@
 
 Технически сессия сначала записывается как pending. Действующей она становится
 только после того, как Refresh Token сохранён в хранилище и его хеш отмечен
-current. Чужие сессии эта операция не меняет. Ротации токена здесь нет.
+current. Чужие сессии эта операция не меняет. Обновление токена заменяет
+только пару этой сессии.
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ from __future__ import annotations
 import sqlite3
 import uuid
 
-from refresh_token import RefreshTokenError, issue_refresh_token, verify_refresh_token
+from refresh_token import RefreshTokenError, issue_refresh_token, rotate_refresh_token
 from secret_store import SecretStore, SecretStoreError, delete_refresh_secret
 from security import REFRESH_TTL_SECONDS
 from token_manager import (
@@ -88,6 +89,7 @@ def open_session(
     return {
         "session_id": session_id,
         "user_id": user["user_id"],
+        "token_id": issued["token_id"],
         "access_token": access_token,
         "refresh_token": issued["refresh_token"],
         "access_expires_at": opened_at + ACCESS_TTL_SECONDS,
@@ -262,11 +264,12 @@ def refresh_session_token(
     conn: sqlite3.Connection,
     store: SecretStore,
     refresh_token: str,
+    signing_key: bytes,
     now: int | None = None,
 ) -> dict:
-    """Проверяет Refresh Token действующей сессии. Пока без замены на новый."""
+    """Заменяет Refresh Token этой сессии и выпускает новый Access Token."""
     try:
-        return verify_refresh_token(conn, store, refresh_token, now=now)
+        return rotate_refresh_token(conn, store, signing_key, refresh_token, now=now)
     except RefreshTokenError as exc:
         raise SessionError(exc.code) from None
 
