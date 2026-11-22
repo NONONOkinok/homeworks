@@ -36,9 +36,9 @@ def migrate(conn) -> None:
         _migrate_session_tables(conn)
         _mark(conn, _SESSION_TABLES)
 
-    if _SESSION_TABLES not in applied:
-        _migrate_session_tables(conn)
-        _mark(conn, _SESSION_TABLES)
+    if _PROOF_KEY_TABLES not in applied:
+        _migrate_proof_key_tables(conn)
+        _mark(conn, _PROOF_KEY_TABLES)
 
 
 def _ensure_migration_table(conn) -> None:
@@ -225,7 +225,7 @@ def _migrate_proof_key_tables(conn) -> None:
     # История использованных Proof.
     conn.execute(
         """
-        CREATE TABLE proof_requests (
+        CREATE TABLE IF NOT EXISTS proof_requests (
             id INTEGER PRIMARY KEY,
             session_id TEXT NOT NULL
                 REFERENCES sessions(id) ON DELETE CASCADE,
@@ -246,7 +246,7 @@ def _migrate_proof_key_tables(conn) -> None:
 
     conn.execute(
         """
-        CREATE INDEX idx_proof_requests_created
+        CREATE INDEX IF NOT EXISTS idx_proof_requests_created
         ON proof_requests(created_at)
         """
     )

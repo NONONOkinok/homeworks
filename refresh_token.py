@@ -32,6 +32,7 @@ from security import (
     hashes_match,
 )
 from token_manager import ACCESS_TTL_SECONDS, issue_access_token
+from proof_manager import ProofError, verify_and_consume_proof
 
 
 class RefreshTokenError(Exception):
@@ -154,23 +155,29 @@ def verify_refresh_token(
     }
 
 
+
 def rotate_refresh_token(
     conn: sqlite3.Connection,
     store: SecretStore,
     signing_key: bytes,
     refresh_token: str,
+    proof: str,
     now: int | None = None,
 ) -> dict:
-    """Меняет действующий Refresh Token на новый и выпускает новый Access Token."""
+    """Меняет Refresh Token после подтверждения владения ключом сессии."""
+
     if not isinstance(signing_key, bytes) or len(signing_key) != 32:
         raise ValueError("Секрет HS256 должен быть 32 байтами")
+
     rotated_at = _clock(now)
+
     if not isinstance(refresh_token, str) or refresh_token == "":
         _event(conn, rotated_at, "refresh_unknown", "rejected", None, None, None)
         conn.commit()
         raise RefreshTokenError("unknown")
 
     digest = hash_refresh_token(refresh_token)
+
     row = conn.execute(
         """
         SELECT id, session_id, token_hash, expires_at, state
@@ -179,32 +186,60 @@ def rotate_refresh_token(
         """,
         (digest,),
     ).fetchone()
+
     if row is None or not hashes_match(row["token_hash"], digest):
         _event(conn, rotated_at, "refresh_unknown", "rejected", None, None, None)
         conn.commit()
         raise RefreshTokenError("unknown")
-    if row["state"] in ("used", "discarded"):
-        _revoke_family(
-            conn, store, row["session_id"], rotated_at,
-            "refresh_reuse", row["id"], "refresh_reuse",
-        )
-        raise RefreshTokenError("replay")
-    if row["state"] != "current":
-        raise RefreshTokenError("not_current")
 
+    # Получаем сессию и её открытый Proof Key.
     session = conn.execute(
         """
-        SELECT s.user_id, s.state, s.expires_at, u.status
+        SELECT s.user_id, s.state, s.expires_at,
+               s.proof_public_key, u.status
         FROM sessions s
         JOIN users u ON u.user_id = s.user_id
         WHERE s.id = ?
         """,
         (row["session_id"],),
     ).fetchone()
+
     if session is None or session["state"] != "active":
         raise RefreshTokenError("no_session")
+
     if session["status"] != "active":
         raise RefreshTokenError("disabled")
+
+    # Сначала обязательно проверяем Proof.
+    # До этой проверки нельзя отзывать сессию из-за повторного токена.
+    try:
+        verify_and_consume_proof(
+            conn=conn,
+            public_key=session["proof_public_key"],
+            proof=proof,
+            expected_session_id=row["session_id"],
+            expected_operation="refresh_rotation",
+            now=rotated_at,
+        )
+    except ProofError:
+        raise RefreshTokenError("invalid_proof") from None
+
+    # Только владелец Proof Key может вызвать обработку повторного токена.
+    if row["state"] in ("used", "discarded"):
+        _revoke_family(
+            conn,
+            store,
+            row["session_id"],
+            rotated_at,
+            "refresh_reuse",
+            row["id"],
+            "refresh_reuse",
+        )
+        raise RefreshTokenError("replay")
+
+    if row["state"] != "current":
+        raise RefreshTokenError("not_current")
+
     if row["expires_at"] <= rotated_at or session["expires_at"] <= rotated_at:
         conn.execute(
             """
@@ -220,10 +255,16 @@ def rotate_refresh_token(
         stored = load_refresh_secret(store, row["id"])
     except SecretStoreError:
         raise RefreshTokenError("storage") from None
+
     if stored is None or not hashes_match(stored, refresh_token):
         _revoke_family(
-            conn, store, row["session_id"], rotated_at,
-            "storage_inconsistency", row["id"], "refresh_storage",
+            conn,
+            store,
+            row["session_id"],
+            rotated_at,
+            "storage_inconsistency",
+            row["id"],
+            "refresh_storage",
         )
         raise RefreshTokenError("storage")
 
@@ -231,13 +272,22 @@ def rotate_refresh_token(
     new_raw = generate_refresh_token()
     new_hash = hash_refresh_token(new_raw)
     new_expires = rotated_at + REFRESH_TTL_SECONDS
+
     conn.execute(
         """
         INSERT INTO refresh_tokens (
-            id, session_id, parent_id, token_hash, issued_at, expires_at, state
+            id, session_id, parent_id, token_hash,
+            issued_at, expires_at, state
         ) VALUES (?, ?, ?, ?, ?, ?, 'staged')
         """,
-        (new_id, row["session_id"], row["id"], new_hash, rotated_at, new_expires),
+        (
+            new_id,
+            row["session_id"],
+            row["id"],
+            new_hash,
+            rotated_at,
+            new_expires,
+        ),
     )
     conn.commit()
 
@@ -247,12 +297,14 @@ def rotate_refresh_token(
     except SecretStoreError:
         _abandon(conn, store, new_id)
         raise RefreshTokenError("storage") from None
+
     if confirmed is None or not hashes_match(confirmed, new_raw):
         _abandon(conn, store, new_id)
         raise RefreshTokenError("storage")
 
     try:
         _begin_immediate(conn)
+
         consumed = conn.execute(
             """
             UPDATE refresh_tokens
@@ -261,9 +313,11 @@ def rotate_refresh_token(
             """,
             (rotated_at, new_id, row["id"]),
         )
+
         if consumed.rowcount != 1:
             conn.rollback()
             _lost_race(conn, store, row["id"], new_id, rotated_at)
+
         promoted = conn.execute(
             """
             UPDATE refresh_tokens
@@ -272,10 +326,12 @@ def rotate_refresh_token(
             """,
             (new_id,),
         )
+
         if promoted.rowcount != 1:
             conn.rollback()
             _abandon(conn, store, new_id)
             raise RefreshTokenError("storage")
+
         extended = conn.execute(
             """
             UPDATE sessions
@@ -284,15 +340,24 @@ def rotate_refresh_token(
             """,
             (rotated_at, new_expires, row["session_id"]),
         )
+
         if extended.rowcount != 1:
             conn.rollback()
             _abandon(conn, store, new_id)
             raise RefreshTokenError("no_session")
+
         _event(
-            conn, rotated_at, "refresh_rotated", "success",
-            session["user_id"], row["session_id"], new_id,
+            conn,
+            rotated_at,
+            "refresh_rotated",
+            "success",
+            session["user_id"],
+            row["session_id"],
+            new_id,
         )
+
         conn.commit()
+
     except sqlite3.OperationalError:
         conn.rollback()
         _abandon(conn, store, new_id)
@@ -304,8 +369,12 @@ def rotate_refresh_token(
         pass
 
     access_token = issue_access_token(
-        session["user_id"], row["session_id"], signing_key, now=rotated_at
+        session["user_id"],
+        row["session_id"],
+        signing_key,
+        now=rotated_at,
     )
+
     return {
         "session_id": row["session_id"],
         "user_id": session["user_id"],
@@ -316,7 +385,6 @@ def rotate_refresh_token(
         "access_expires_at": rotated_at + ACCESS_TTL_SECONDS,
         "refresh_expires_at": new_expires,
     }
-
 
 def _lost_race(
     conn: sqlite3.Connection,

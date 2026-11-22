@@ -17,7 +17,12 @@ from __future__ import annotations
 import sqlite3
 import uuid
 
-from refresh_token import RefreshTokenError, issue_refresh_token, rotate_refresh_token
+from refresh_token import (
+    RefreshTokenError,
+    issue_refresh_token,
+    rotate_refresh_token,
+    verify_refresh_token,
+)
 from secret_store import SecretStore, SecretStoreError, delete_refresh_secret
 from security import REFRESH_TTL_SECONDS
 from token_manager import (
@@ -25,6 +30,12 @@ from token_manager import (
     AccessTokenError,
     issue_access_token,
     verify_access_token,
+)
+from proof_manager import (
+    ProofError,
+    create_proof_keypair,
+    delete_proof_key,
+    verify_and_consume_proof,
 )
 
 
@@ -43,52 +54,85 @@ def open_session(
     username: str,
     now: int | None = None,
 ) -> dict:
-    """
-    Новая сессия для уже проверенного логина.
-
-    Пароль здесь не проверяется: это делает login_user. Повторный вызов
-    добавляет ещё одну сессию и не закрывает предыдущие.
-    """
+    """Создаёт независимую сессию с отдельной парой Proof Key."""
     if not isinstance(signing_key, bytes) or len(signing_key) != 32:
         raise ValueError("Секрет HS256 должен быть 32 байтами")
+
     opened_at = _clock(now)
     user = _user_by_name(conn, username)
     session_id = str(uuid.uuid4())
-    refresh_expires_at = opened_at + REFRESH_TTL_SECONDS
-    conn.execute(
-        """
-        INSERT INTO sessions (id, user_id, created_at, expires_at, state)
-        VALUES (?, ?, ?, ?, 'pending')
-        """,
-        (session_id, user["user_id"], opened_at, refresh_expires_at),
-    )
-    conn.commit()
 
     try:
-        issued = issue_refresh_token(conn, store, session_id, now=opened_at)
-    except (RefreshTokenError, SecretStoreError):
+        proof_keys = create_proof_keypair(store, session_id)
+    except ProofError:
+        raise SessionError("proof_storage") from None
+
+    refresh_expires_at = opened_at + REFRESH_TTL_SECONDS
+
+    try:
+        conn.execute(
+            """
+            INSERT INTO sessions (
+                id, user_id, created_at, expires_at, state,
+                proof_key_id, proof_public_key
+            )
+            VALUES (?, ?, ?, ?, 'pending', ?, ?)
+            """,
+            (
+                session_id,
+                user["user_id"],
+                opened_at,
+                refresh_expires_at,
+                proof_keys["key_id"],
+                proof_keys["public_key"],
+            ),
+        )
+        conn.commit()
+
+        issued = issue_refresh_token(
+            conn,
+            store,
+            session_id,
+            now=opened_at,
+        )
+
+        activated = conn.execute(
+            """
+            UPDATE sessions
+            SET state = 'active'
+            WHERE id = ? AND state = 'pending'
+            """,
+            (session_id,),
+        )
+
+        if activated.rowcount != 1:
+            raise SessionError("storage")
+
+        conn.commit()
+
+    except (RefreshTokenError, SecretStoreError, sqlite3.Error, SessionError):
+        conn.rollback()
         _close_pending(conn, store, session_id, opened_at)
+
+        try:
+            delete_proof_key(store, session_id)
+        except ProofError:
+            pass
+
         raise SessionError("storage") from None
 
-    activated = conn.execute(
-        """
-        UPDATE sessions
-        SET state = 'active'
-        WHERE id = ? AND state = 'pending'
-        """,
-        (session_id,),
-    )
-    if activated.rowcount != 1:
-        _close_pending(conn, store, session_id, opened_at)
-        raise SessionError("storage")
-    conn.commit()
-
     access_token = issue_access_token(
-        user["user_id"], session_id, signing_key, now=opened_at
+        user["user_id"],
+        session_id,
+        signing_key,
+        now=opened_at,
     )
+
     return {
         "session_id": session_id,
         "user_id": user["user_id"],
+        "proof_key_id": proof_keys["key_id"],
+        "proof_public_key": proof_keys["public_key"],
         "token_id": issued["token_id"],
         "access_token": access_token,
         "refresh_token": issued["refresh_token"],
@@ -144,6 +188,83 @@ def authorize(
         "session_expires_at": row["expires_at"],
     }
 
+def refresh_access_token(
+    conn: sqlite3.Connection,
+    store: SecretStore,
+    refresh_token: str,
+    proof: str,
+    signing_key: bytes,
+    now: int | None = None,
+) -> dict:
+    """
+    Обновляет только Access Token.
+
+    Refresh Token остаётся прежним. Для операции требуется
+    одноразовое доказательство владения ключом этой сессии.
+    """
+    checked_at = _clock(now)
+
+    try:
+        token_data = verify_refresh_token(
+            conn,
+            store,
+            refresh_token,
+            now=checked_at,
+        )
+
+        session = conn.execute(
+            """
+            SELECT s.user_id, s.proof_public_key, s.state, u.status
+            FROM sessions s
+            JOIN users u ON u.user_id = s.user_id
+            WHERE s.id = ?
+            """,
+            (token_data["session_id"],),
+        ).fetchone()
+
+        if session is None or session["state"] != "active":
+            raise SessionError("revoked")
+
+        if session["status"] != "active":
+            raise SessionError("disabled")
+
+        if not session["proof_public_key"]:
+            raise SessionError("proof_missing")
+
+        verify_and_consume_proof(
+            conn,
+            session["proof_public_key"],
+            proof,
+            token_data["session_id"],
+            "access_refresh",
+            now=checked_at,
+        )
+
+        access_token = issue_access_token(
+            session["user_id"],
+            token_data["session_id"],
+            signing_key,
+            now=checked_at,
+        )
+
+        conn.commit()
+
+        return {
+            "session_id": token_data["session_id"],
+            "user_id": session["user_id"],
+            "access_token": access_token,
+            "access_expires_at": checked_at + ACCESS_TTL_SECONDS,
+            "refresh_token": refresh_token,
+            "refresh_expires_at": token_data["expires_at"],
+        }
+
+    except ProofError as exc:
+        conn.rollback()
+        raise SessionError(f"proof_{exc.code}") from None
+
+    except RefreshTokenError as exc:
+        conn.rollback()
+        raise SessionError(exc.code) from None
 
 def list_sessions(
     conn: sqlite3.Connection,
@@ -260,16 +381,26 @@ def recover_pending_sessions(
     return closed
 
 
+
 def refresh_session_token(
     conn: sqlite3.Connection,
     store: SecretStore,
     refresh_token: str,
+    proof: str,
     signing_key: bytes,
     now: int | None = None,
 ) -> dict:
-    """Заменяет Refresh Token этой сессии и выпускает новый Access Token."""
+    """Заменяет Refresh Token после проверки Proof Key."""
+
     try:
-        return rotate_refresh_token(conn, store, signing_key, refresh_token, now=now)
+        return rotate_refresh_token(
+            conn=conn,
+            store=store,
+            signing_key=signing_key,
+            refresh_token=refresh_token,
+            proof=proof,
+            now=now,
+        )
     except RefreshTokenError as exc:
         raise SessionError(exc.code) from None
 
@@ -328,6 +459,10 @@ def _close_pending(
         """,
         (now, session_id),
     )
+    try:
+        delete_proof_key(store, session_id)
+    except ProofError:
+        pass
     conn.commit()
     return True
 
@@ -346,6 +481,10 @@ def _delete_session_secrets(
             delete_refresh_secret(store, row["id"])
         except SecretStoreError:
             continue
+        try:
+            delete_proof_key(store, session_id)
+        except ProofError:
+            pass
 
 
 def _clock(now: int | None) -> int:
