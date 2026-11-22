@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 _BASELINE = 1
 _USERS_IDENTITY = 2
 _SESSION_TABLES = 3
+_PROOF_KEY_TABLES = 4
 
 
 def migrate(conn) -> None:
@@ -30,6 +31,10 @@ def migrate(conn) -> None:
     if _USERS_IDENTITY not in applied:
         _migrate_user_identity(conn)
         _mark(conn, _USERS_IDENTITY)
+
+    if _SESSION_TABLES not in applied:
+        _migrate_session_tables(conn)
+        _mark(conn, _SESSION_TABLES)
 
     if _SESSION_TABLES not in applied:
         _migrate_session_tables(conn)
@@ -185,4 +190,63 @@ def _migrate_session_tables(conn) -> None:
     )
     conn.execute(
         "CREATE INDEX idx_events_session ON security_events(session_id)"
+    )
+
+def _migrate_proof_key_tables(conn) -> None:
+    """
+    Добавляет данные Proof Key к существующим сессиям
+    и создаёт таблицу использованных доказательств.
+    """
+
+    # Добавляем поля открытого ключа.
+    columns = _column_names(conn, "sessions")
+
+    if "proof_key_id" not in columns:
+        conn.execute(
+            "ALTER TABLE sessions ADD COLUMN proof_key_id TEXT"
+        )
+
+    if "proof_public_key" not in columns:
+        conn.execute(
+            "ALTER TABLE sessions ADD COLUMN proof_public_key TEXT"
+        )
+
+    # Один идентификатор ключа не должен принадлежать
+    # нескольким сессиям.
+    conn.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS
+        idx_sessions_proof_key
+        ON sessions(proof_key_id)
+        WHERE proof_key_id IS NOT NULL
+        """
+    )
+
+    # История использованных Proof.
+    conn.execute(
+        """
+        CREATE TABLE proof_requests (
+            id INTEGER PRIMARY KEY,
+            session_id TEXT NOT NULL
+                REFERENCES sessions(id) ON DELETE CASCADE,
+            jti TEXT NOT NULL,
+            request_id TEXT NOT NULL,
+            operation TEXT NOT NULL
+                CHECK (
+                    operation IN (
+                        'access_refresh',
+                        'refresh_rotation'
+                    )
+                ),
+            created_at INTEGER NOT NULL,
+            UNIQUE(session_id, jti)
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE INDEX idx_proof_requests_created
+        ON proof_requests(created_at)
+        """
     )
