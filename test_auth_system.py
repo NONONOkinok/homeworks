@@ -12,6 +12,7 @@ import unicodedata
 import pytest
 import sys
 import auth_system
+from auth_app import PasswordEntry, AuthApp
 
 
 # ВАЛИДАЦИЯ ПАРОЛЯ (validate_password_policy)
@@ -247,7 +248,7 @@ class TestDatabase:
             ]
         finally:
             conn.close()
-        assert versions == [1, 2, 3]
+        assert versions == [1, 2, 3, 4]
 
     def test_legacy_users_keep_password_hash(self, tmp_path, monkeypatch):
         """Старая база без user_id обновляется, хеш и логин остаются."""
@@ -469,7 +470,7 @@ class TestPasswordEntry:
     @pytest.fixture
     def pwd_entry(self, root):
         """Экземпляр PasswordEntry, привязанный к скрытому окну"""
-        return auth_system.PasswordEntry(root, width=20)
+        return PasswordEntry(root, width=20)
 
     def test_get_insert_delete_work(self, pwd_entry):
         """get/insert/delete проксируются во внутренний Entry"""
@@ -523,7 +524,7 @@ class TestAuthApp:
             pytest.skip("Нет доступного дисплея для Tkinter")
         root.withdraw()  # окно не показываем
         try:
-            application = auth_system.AuthApp(root)
+            application = AuthApp(root)
         except Exception as e:  # noqa: BLE001 — упрощаем диагностику в CI
             root.destroy()
             pytest.skip(f"Не удалось создать приложение: {e}")
@@ -587,9 +588,9 @@ class TestAuthApp:
 
     def test_register_password_has_toggle(self, app):
         """Поле пароля в интерфейсе — это PasswordEntry с «глазом»."""
-        assert isinstance(app.register_password, auth_system.PasswordEntry)
-        assert isinstance(app.register_confirm, auth_system.PasswordEntry)
-        assert isinstance(app.login_password, auth_system.PasswordEntry)
+        assert isinstance(app.register_password, PasswordEntry)
+        assert isinstance(app.register_confirm, PasswordEntry)
+        assert isinstance(app.login_password, PasswordEntry)
     
     def test_register_password_toggle_visible(self, app):
         """В UI поле пароля можно показать/скрыть без потери текста."""

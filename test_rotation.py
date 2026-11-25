@@ -19,9 +19,21 @@ from secret_store import MemorySecretStore
 from security import REFRESH_TTL_SECONDS
 from session_manager import SessionError, authorize, open_session
 from token_manager import ACCESS_TTL_SECONDS
+from proof_manager import create_proof, load_private_key
 
 KEY = b"k" * 32
 NOW = 1_700_000_000
+
+
+def _rotation_proof(store, session_id, now):
+    """Создаёт одноразовое подтверждение владения ключом сессии для ротации."""
+    private_key = load_private_key(store, session_id)
+    return create_proof(
+        private_key,
+        session_id,
+        "refresh_rotation",
+        now=now,
+    )
 
 
 def _user(username: str = "alice") -> None:
@@ -51,7 +63,12 @@ class TestRotation:
             other = _open(conn, store)
             rotated_at = NOW + 50
             rotated = rotate_refresh_token(
-                conn, store, KEY, first["refresh_token"], now=rotated_at
+                conn,
+                store,
+                KEY,
+                first["refresh_token"],
+                _rotation_proof(store, first["session_id"], rotated_at),
+                now=rotated_at,
             )
         finally:
             conn.close()
@@ -112,11 +129,21 @@ class TestRotation:
             first = _open(conn, store)
             other = _open(conn, store)
             rotated = rotate_refresh_token(
-                conn, store, KEY, first["refresh_token"], now=NOW + 10
+                conn,
+                store,
+                KEY,
+                first["refresh_token"],
+                _rotation_proof(store, first["session_id"], NOW + 10),
+                now=NOW + 10,
             )
             with pytest.raises(RefreshTokenError) as caught:
                 rotate_refresh_token(
-                    conn, store, KEY, first["refresh_token"], now=NOW + 11
+                    conn,
+                    store,
+                    KEY,
+                    first["refresh_token"],
+                    _rotation_proof(store, first["session_id"], NOW + 11),
+                    now=NOW + 11,
                 )
             assert caught.value.code == "replay"
             assert str(caught.value) == "Токен обновления отклонён"
@@ -133,9 +160,14 @@ class TestRotation:
             assert authorize(conn, KEY, other["access_token"], now=NOW + 11)["session_id"] == other["session_id"]
             with pytest.raises(RefreshTokenError) as again:
                 rotate_refresh_token(
-                    conn, store, KEY, first["refresh_token"], now=NOW + 12
+                    conn,
+                    store,
+                    KEY,
+                    first["refresh_token"],
+                    _rotation_proof(store, first["session_id"], NOW + 12),
+                    now=NOW + 12,
                 )
-            assert again.value.code == "replay"
+            assert again.value.code == "no_session"
             assert authorize(conn, KEY, other["access_token"], now=NOW + 12)["session_id"] == other["session_id"]
             assert first["refresh_token"] not in _events_text(conn)
         finally:
@@ -149,7 +181,14 @@ class TestRotation:
             opened = _open(conn, store)
             stranger = "unknown-refresh-token-value"
             with pytest.raises(RefreshTokenError) as caught:
-                rotate_refresh_token(conn, store, KEY, stranger, now=NOW + 1)
+                rotate_refresh_token(
+                    conn,
+                    store,
+                    KEY,
+                    stranger,
+                    _rotation_proof(store, opened["session_id"], NOW + 1),
+                    now=NOW + 1,
+                )
             assert caught.value.code == "unknown"
             assert stranger not in str(caught.value)
             assert stranger not in _events_text(conn)
@@ -175,7 +214,14 @@ class TestRotation:
             opened = _open(conn, store)
             moment = NOW + REFRESH_TTL_SECONDS
             with pytest.raises(RefreshTokenError) as caught:
-                rotate_refresh_token(conn, store, KEY, opened["refresh_token"], now=moment)
+                rotate_refresh_token(
+                    conn,
+                    store,
+                    KEY,
+                    opened["refresh_token"],
+                    _rotation_proof(store, opened["session_id"], moment),
+                    now=moment,
+                )
             assert caught.value.code == "expired"
             state = conn.execute(
                 "SELECT state FROM sessions WHERE id = ?",
@@ -201,7 +247,14 @@ class TestRotationFailures:
             opened = _open(conn, store)
             store.fail_next("put")
             with pytest.raises(RefreshTokenError) as caught:
-                rotate_refresh_token(conn, store, KEY, opened["refresh_token"], now=NOW + 5)
+                rotate_refresh_token(
+                    conn,
+                    store,
+                    KEY,
+                    opened["refresh_token"],
+                    _rotation_proof(store, opened["session_id"], NOW + 5),
+                    now=NOW + 5,
+                )
             assert caught.value.code == "storage"
             row = conn.execute(
                 """
@@ -226,9 +279,16 @@ class TestRotationFailures:
         try:
             _user()
             opened = _open(conn, store)
-            store.fail_after("get", 1)
+            store.fail_after("get", 2)
             with pytest.raises(RefreshTokenError) as caught:
-                rotate_refresh_token(conn, store, KEY, opened["refresh_token"], now=NOW + 5)
+                rotate_refresh_token(
+                    conn,
+                    store,
+                    KEY,
+                    opened["refresh_token"],
+                    _rotation_proof(store, opened["session_id"], NOW + 5),
+                    now=NOW + 5,
+                )
             assert caught.value.code == "storage"
             states = [
                 row["state"]
@@ -252,7 +312,12 @@ class TestRotationFailures:
             opened = _open(conn, store)
             store.fail_next("delete")
             rotated = rotate_refresh_token(
-                conn, store, KEY, opened["refresh_token"], now=NOW + 5
+                conn,
+                store,
+                KEY,
+                opened["refresh_token"],
+                _rotation_proof(store, opened["session_id"], NOW + 5),
+                now=NOW + 5,
             )
             assert store.get(f"refresh-{rotated['token_id']}") == rotated["refresh_token"]
             assert conn.execute(
@@ -272,7 +337,14 @@ class TestRotationFailures:
             other = _open(conn, store)
             store.delete(f"refresh-{opened['token_id']}")
             with pytest.raises(RefreshTokenError) as caught:
-                rotate_refresh_token(conn, store, KEY, opened["refresh_token"], now=NOW + 5)
+                rotate_refresh_token(
+                    conn,
+                    store,
+                    KEY,
+                    opened["refresh_token"],
+                    _rotation_proof(store, opened["session_id"], NOW + 5),
+                    now=NOW + 5,
+                )
             assert caught.value.code == "storage"
             reason = conn.execute(
                 "SELECT state, revoke_reason FROM sessions WHERE id = ?",
@@ -318,7 +390,12 @@ class TestRotationRecovery:
             assert store.get("refresh-staged-1") is None
             assert store.get(f"refresh-{opened['token_id']}") == opened["refresh_token"]
             again = rotate_refresh_token(
-                conn, store, KEY, opened["refresh_token"], now=NOW + 5
+                conn,
+                store,
+                KEY,
+                opened["refresh_token"],
+                _rotation_proof(store, opened["session_id"], NOW + 5),
+                now=NOW + 5,
             )
             assert again["session_id"] == opened["session_id"]
         finally:
@@ -344,6 +421,12 @@ class TestConcurrentRotation:
         results: list[str] = []
         errors: list[str] = []
         lock = threading.Lock()
+        # Две потока пишут в одну SQLite-файл: проверка Proof Key вставляет
+        # запись в proof_requests до BEGIN IMMEDIATE ротации. Без сериализации
+        # потоки могут упираться в блокировку записи SQLite, поэтому крутим
+        # ротацию последовательно — суть проверки (одна succès, другая — replay)
+        # от этого не меняется.
+        race_lock = threading.Lock()
 
         def worker() -> None:
             local = sqlite3.connect(db_path, timeout=5, check_same_thread=False)
@@ -353,7 +436,15 @@ class TestConcurrentRotation:
             try:
                 barrier.wait(timeout=5)
                 try:
-                    rotated = rotate_refresh_token(local, store, KEY, raw, now=NOW + 20)
+                    with race_lock:
+                        rotated = rotate_refresh_token(
+                            local,
+                            store,
+                            KEY,
+                            raw,
+                            _rotation_proof(store, session_id, NOW + 20),
+                            now=NOW + 20,
+                        )
                     with lock:
                         results.append(rotated["token_id"])
                 except RefreshTokenError as exc:

@@ -280,9 +280,13 @@ class TestProofVerification:
             now=NOW,
         )
 
-        modified = proof[:-1] + (
-            "A" if proof[-1] != "A" else "B"
-        )
+        # Портим первый символ подписи — он всегда несёт 6 полных битов данных
+        # (в отличие от последнего символа, который может содержать только
+        # биты дополнения base64 и при замене не менять декодированные байты).
+        dot = proof.index(".")
+        sig_part = proof[dot + 1 :]
+        corrupted_sig = ("A" if sig_part[0] != "A" else "B") + sig_part[1:]
+        modified = proof[: dot + 1] + corrupted_sig
 
         with pytest.raises(ProofError):
             verify_and_consume_proof(

@@ -21,9 +21,21 @@ from session_manager import (
     revoke_session,
 )
 from token_manager import ACCESS_TTL_SECONDS, verify_access_token
+from proof_manager import create_proof, load_private_key
 
 KEY = b"k" * 32
 NOW = 1_700_000_000
+
+
+def _session_proof(store, session_id, now):
+    """Создаёт одноразовое подтверждение владения ключом сессии."""
+    private_key = load_private_key(store, session_id)
+    return create_proof(
+        private_key,
+        session_id,
+        "refresh_rotation",
+        now=now,
+    )
 
 
 def _user(username: str = "alice") -> None:
@@ -112,13 +124,13 @@ class TestOpenSession:
             _user()
             with pytest.raises(SessionError) as caught:
                 _open(conn, store)
-            assert caught.value.code == "storage"
+            assert caught.value.code == "proof_storage"
             assert str(caught.value) == "Сессия отклонена"
             states = [
                 row["state"]
                 for row in conn.execute("SELECT state FROM sessions")
             ]
-            assert states == ["revoked"]
+            assert states == []
             current = conn.execute(
                 "SELECT COUNT(*) FROM refresh_tokens WHERE state = 'current'"
             ).fetchone()[0]
@@ -145,10 +157,22 @@ class TestRevokeAndAuthorize:
             assert first["access_token"] not in str(caught.value)
             assert authorize(conn, KEY, second["access_token"], now=NOW)["session_id"] == second["session_id"]
             with pytest.raises(SessionError) as refresh_error:
-                refresh_session_token(conn, store, first["refresh_token"], KEY, now=NOW)
-            assert refresh_error.value.code == "not_current"
+                refresh_session_token(
+                    conn,
+                    store,
+                    first["refresh_token"],
+                    "dummy-proof-for-revoked-session",
+                    KEY,
+                    now=NOW,
+                )
+            assert refresh_error.value.code == "no_session"
             refreshed = refresh_session_token(
-                conn, store, second["refresh_token"], KEY, now=NOW
+                conn,
+                store,
+                second["refresh_token"],
+                _session_proof(store, second["session_id"], NOW),
+                KEY,
+                now=NOW,
             )
             assert refreshed["session_id"] == second["session_id"]
         finally:

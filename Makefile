@@ -32,7 +32,7 @@ install:
 
 # Запуск приложения
 run:
-	$(PYTHON) auth_system.py
+	$(PYTHON) auth_app.py
 
 # Тесты
 test:
@@ -45,7 +45,7 @@ test-integration:
 	$(PYTHON) -m pytest test_integration.py
 
 test-cov:
-	$(PYTHON) -m pytest --cov=auth_system --cov=database --cov=secret_store --cov=token_manager --cov=security --cov=refresh_token --cov=session_manager --cov-report=term-missing --cov-report=html
+	$(PYTHON) -m pytest --cov=auth_system --cov=auth_app --cov=database --cov=secret_store --cov=token_manager --cov=security --cov=refresh_token --cov=session_manager --cov-report=term-missing --cov-report=html
 
 # Очистка
 clean:
